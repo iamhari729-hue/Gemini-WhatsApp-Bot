@@ -1,8 +1,6 @@
 FROM node:20-slim
 
-# Install Google Chrome Stable and necessary libraries
-# We need to install the actual Chrome browser to ensure all shared library dependencies
-# (libnss3, libatk, etc.) are present for Puppeteer to run correctly in this slim environment.
+# 1. Install Google Chrome Stable and required libs
 RUN apt-get update \
     && apt-get install -y wget gnupg \
     && wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | gpg --dearmor -o /usr/share/keyrings/googlechrome-linux-keyring.gpg \
@@ -12,21 +10,19 @@ RUN apt-get update \
       --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
-# Create app directory
+# 2. Tell Puppeteer to SKIP downloading Chromium (we use the installed one)
+ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
+ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/google-chrome-stable
+
 WORKDIR /usr/src/app
 
-# Copy package files
 COPY package*.json ./
 
-# Install dependencies
-# We use --production to skip devDependencies, but ensure puppeteer installs correctly
-RUN npm install
+# 3. Install dependencies (ignoring scripts to prevent puppeteer download)
+RUN npm install --ignore-scripts
 
-# Copy app source
 COPY . .
 
-# Expose the port the app runs on
 EXPOSE 3000
 
-# Start the application
 CMD [ "npm", "start" ]
