@@ -8,11 +8,12 @@ const path = require('path');
 const app = express();
 const port = process.env.PORT || 3000;
 
-// Hugging Face Configuration
 const HF_TOKEN = process.env.HUGGINGFACE_TOKEN;
 
-// THE FIX: Use the OpenAI-compatible endpoint structure
+// 1. URL: Use the OpenAI-compatible endpoint
 const ROUTER_URL = "https://router.huggingface.co/hf-inference/v1/chat/completions";
+
+// 2. Model: Default to Mistral, but ready to fallback
 const MODEL_ID = "mistralai/Mistral-7B-Instruct-v0.3"; 
 
 let qrCodeDataUrl = null;
@@ -34,7 +35,7 @@ app.get('/', (req, res) => {
             </html>
         `);
     } else {
-        res.send('<html><body><h1>Bot is Active!</h1><p>Status: Connected.</p></body></html>');
+        res.send(`<html><body><h1>Bot is Active!</h1><p>Status: Connected.</p></body></html>`);
     }
 });
 
@@ -42,9 +43,9 @@ app.listen(port, () => {
     console.log(`Server running on port ${port}`);
 });
 
-// --- Call Hugging Face Router (OpenAI Compatible) ---
+// --- Call Hugging Face Router (OpenAI Standard) ---
 async function callHFRouter(prompt) {
-    if (!HF_TOKEN) throw new Error("HUGGINGFACE_TOKEN is missing in Environment Variables!");
+    if (!HF_TOKEN) throw new Error("HUGGINGFACE_TOKEN is missing.");
 
     console.log(">> Sending request to HF Router...");
     
@@ -72,6 +73,7 @@ async function callHFRouter(prompt) {
 
         const data = await response.json();
         
+        // Parse OpenAI-style response
         if (data.choices && data.choices.length > 0 && data.choices[0].message) {
             return data.choices[0].message.content;
         } else {
@@ -80,7 +82,7 @@ async function callHFRouter(prompt) {
 
     } catch (error) {
         console.error(">> API Call Failed:", error);
-        throw error;
+        return "I am having trouble thinking right now. Please try again in a moment.";
     }
 }
 
@@ -138,13 +140,9 @@ async function connectToWhatsApp() {
                 console.log(`>> Received Prompt: "${prompt}"`);
                 await sock.sendPresenceUpdate('composing', sender);
 
-                try {
-                    const text = await callHFRouter(prompt);
-                    await sock.sendMessage(sender, { text: text }, { quoted: msg });
-                    console.log('>> Reply sent!');
-                } catch (aiError) {
-                    await sock.sendMessage(sender, { text: "⚠️ AI Error: " + aiError.message }, { quoted: msg });
-                }
+                const text = await callHFRouter(prompt);
+                await sock.sendMessage(sender, { text: text }, { quoted: msg });
+                console.log('>> Reply sent!');
             }
         } catch (error) {
             console.error('>> Handler Error:', error);
