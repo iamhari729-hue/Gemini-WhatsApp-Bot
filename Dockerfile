@@ -1,7 +1,6 @@
 FROM node:20-slim
 
-# Install Google Chrome Stable and fonts
-# Note: We install wget and gnupg first to fetch the Chrome signing key
+# Install Chrome and Fonts, then Clean up immediately to save space
 RUN apt-get update \
     && apt-get install -y wget gnupg \
     && wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | gpg --dearmor -o /usr/share/keyrings/googlechrome-linux-keyring.gpg \
@@ -11,7 +10,7 @@ RUN apt-get update \
       --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
-# Tell Puppeteer where to find Chrome
+# Set Puppeteer Env
 ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
 ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/google-chrome-stable
 
@@ -19,7 +18,8 @@ WORKDIR /usr/src/app
 
 COPY package*.json ./
 
-RUN npm install
+# Install only production dependencies
+RUN npm install --omit=dev
 
 COPY . .
 
