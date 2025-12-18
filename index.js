@@ -28,7 +28,7 @@ app.get('/', (req, res) => {
             </html>
         `);
     } else {
-        res.send('<html><body><h1>Waiting for QR Code...</h1><p>Please check back in a few seconds.</p></body></html>');
+        res.send('<html><body><h1>Client is Ready!</h1><p>The bot is connected. Go to WhatsApp and send <b>!gpt hello</b> to test it.</p></body></html>');
     }
 });
 
@@ -38,17 +38,14 @@ app.listen(port, () => {
 
 // --- WhatsApp Client Setup ---
 const client = new Client({
-    authStrategy: new LocalAuth(), // Saves session to prevent re-scanning
+    authStrategy: new LocalAuth(),
     puppeteer: {
         args: ['--no-sandbox', '--disable-setuid-sandbox'],
-        // Explicitly tell Puppeteer to use the installed Chrome if needed, 
-        // though typically just the args + installed libs are enough.
     }
 });
 
 client.on('qr', (qr) => {
     console.log('QR RECEIVED', qr);
-    // Convert QR string to Data URI for HTML display
     qrcode.toDataURL(qr, (err, url) => {
         if (err) {
             console.error('Error generating QR image', err);
@@ -64,7 +61,8 @@ client.on('ready', () => {
 });
 
 // --- Message Handling ---
-client.on('message', async msg => {
+// CHANGED: Using 'message_create' instead of 'message' so it listens to your own messages too
+client.on('message_create', async msg => {
     if (msg.body.startsWith('!gpt ')) {
         const prompt = msg.body.slice(5); // Remove '!gpt ' from the start
         console.log(`Received prompt: ${prompt}`);
