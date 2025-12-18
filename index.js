@@ -2,17 +2,16 @@ const { makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBailey
 const pino = require('pino');
 const express = require('express');
 const qrcode = require('qrcode');
-const { HfInference } = require('@huggingface/inference');
 const fs = require('fs');
 const path = require('path');
 
 const app = express();
 const port = process.env.PORT || 3000;
 
-// Initialize Hugging Face
-const hf = new HfInference(process.env.HUGGINGFACE_TOKEN);
-// Mistral-7B is a very smart, fast, and free model
-const MODEL_NAME = "mistralai/Mistral-7B-Instruct-v0.2";
+const HF_TOKEN = process.env.HUGGINGFACE_TOKEN;
+// We use the new, correct Router URL directly
+const MODEL_ID = "mistralai/Mistral-7B-Instruct-v0.3";
+const API_URL = `https://router.huggingface.co/hf-inference/models/${MODEL_ID}`;
 
 let qrCodeDataUrl = null;
 let sock;
@@ -22,18 +21,18 @@ app.get('/', (req, res) => {
     if (qrCodeDataUrl) {
         res.send(`
             <html>
-                <head><title>WhatsApp Bot</title></head>
-                <body style="display:flex; justify-content:center; align-items:center; height:100vh; background:#f0f2f5; font-family:sans-serif;">
+                <head><title>WhatsApp Bot QR</title></head>
+                <body style="display:flex; justify-content:center; align-items:center; height:100vh; background:#f0f2f5;">
                     <div style="text-align:center;">
-                        <h1>Scan QR Code</h1>
+                        <h1>Scan this QR Code</h1>
                         <img src="${qrCodeDataUrl}" alt="QR Code" style="border: 5px solid white; border-radius: 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.1);"/>
-                        <p>Powered by Mistral AI ⚡</p>
+                        <p>Powered by Mistral (via HF Router)</p>
                     </div>
                 </body>
             </html>
         `);
     } else {
-        res.send('<html><body><h1>Bot is Running!</h1><p>Status: Connected to WhatsApp.</p></body></html>');
+        res.send(`<html><body><h1>Bot is Active!</h1><p>Status: Connected.</p></body></html>`);
     }
 });
 
@@ -41,23 +40,48 @@ app.listen(port, () => {
     console.log(`Server running on port ${port}`);
 });
 
-// --- AI Logic (Mistral) ---
-async function getMistralResponse(prompt) {
+// --- Direct Hugging Face Router Call ---
+async function callMistralDirect(prompt) {
+    if (!HF_TOKEN) throw new Error("HUGGINGFACE_TOKEN is missing.");
+
+    console.log(">> Sending request to HF Router...");
+    
     try {
-        console.log(">> Sending request to Mistral AI...");
-        const result = await hf.textGeneration({
-            model: MODEL_NAME,
-            inputs: `<s>[INST] ${prompt} [/INST]`, // Format for Mistral
-            parameters: {
-                max_new_tokens: 500,
-                temperature: 0.7,
-                return_full_text: false
-            }
+        const response = await fetch(API_URL, {
+            method: "POST",
+            headers: {
+                "Authorization": `Bearer ${HF_TOKEN}`,
+                "Content-Type": "application/json"
+            },
+            body: JSON.stringify({
+                inputs: `<s>[INST] ${prompt} [/INST]`,
+                parameters: {
+                    max_new_tokens: 500,
+                    return_full_text: false
+                }
+            })
         });
-        return result.generated_text;
+
+        // Handle errors explicitly
+        if (!response.ok) {
+            const errText = await response.text();
+            throw new Error(`HF API Error (${response.status}): ${errText}`);
+        }
+
+        const result = await response.json();
+        
+        // HF returns an array of objects
+        if (Array.isArray(result) && result.length > 0) {
+            return result[0].generated_text;
+        } else if (result.generated_text) {
+            return result.generated_text;
+        } else {
+            return "Error: No text generated.";
+        }
+
     } catch (error) {
-        console.error(">> Hugging Face Error:", error);
-        return "Sorry, I couldn't process that. (API Error)";
+        console.error(">> API Call Failed:", error);
+        throw error;
     }
 }
 
@@ -115,9 +139,13 @@ async function connectToWhatsApp() {
                 console.log(`>> Received Prompt: "${prompt}"`);
                 await sock.sendPresenceUpdate('composing', sender);
 
-                const text = await getMistralResponse(prompt);
-                await sock.sendMessage(sender, { text: text }, { quoted: msg });
-                console.log('>> Reply sent!');
+                try {
+                    const text = await callMistralDirect(prompt);
+                    await sock.sendMessage(sender, { text: text }, { quoted: msg });
+                    console.log('>> Reply sent!');
+                } catch (aiError) {
+                    await sock.sendMessage(sender, { text: "⚠️ AI Error: " + aiError.message }, { quoted: msg });
+                }
             }
         } catch (error) {
             console.error('>> Handler Error:', error);
