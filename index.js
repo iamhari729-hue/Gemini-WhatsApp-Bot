@@ -10,9 +10,9 @@ const port = process.env.PORT || 3000;
 
 // Hugging Face Configuration
 const HF_TOKEN = process.env.HUGGINGFACE_TOKEN;
-// Use the standardized OpenAI-compatible endpoint
+
+// THE FIX: Use the OpenAI-compatible endpoint structure
 const ROUTER_URL = "https://router.huggingface.co/hf-inference/v1/chat/completions";
-// Use a very stable model ID
 const MODEL_ID = "mistralai/Mistral-7B-Instruct-v0.3"; 
 
 let qrCodeDataUrl = null;
@@ -67,8 +67,6 @@ async function callHFRouter(prompt) {
 
         if (!response.ok) {
             const errText = await response.text();
-            // If 404, it might mean the model is currently offline in the router
-            // We can fallback to another free model
             throw new Error(`Router Error (${response.status}): ${errText}`);
         }
 
