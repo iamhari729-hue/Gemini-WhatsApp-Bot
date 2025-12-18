@@ -9,7 +9,6 @@ const port = process.env.PORT || 3000;
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 let qrCodeDataUrl = null;
 
-// --- Express Server ---
 app.get('/', (req, res) => {
     if (qrCodeDataUrl) {
         res.send(`
@@ -33,20 +32,19 @@ app.listen(port, () => {
     console.log(`Server running on port ${port}`);
 });
 
-// --- WhatsApp Client ---
 const client = new Client({
     authStrategy: new LocalAuth(),
     puppeteer: {
-        // CRITICAL: Point to the Chrome we installed in Docker
-        executablePath: '/usr/bin/google-chrome-stable', 
+        // REMOVED: executablePath (We rely on the Dockerfile ENV now)
         headless: true,
         args: [
             '--no-sandbox',
             '--disable-setuid-sandbox',
-            '--disable-dev-shm-usage', // Vital for Docker memory
+            '--disable-dev-shm-usage',
             '--disable-accelerated-2d-canvas',
             '--no-first-run',
             '--no-zygote',
+            '--single-process', 
             '--disable-gpu'
         ],
     }
