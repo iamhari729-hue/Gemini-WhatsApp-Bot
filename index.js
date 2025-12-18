@@ -8,10 +8,13 @@ const path = require('path');
 const app = express();
 const port = process.env.PORT || 3000;
 
+// Env Vars
 const HF_TOKEN = process.env.HUGGINGFACE_TOKEN;
-// CORRECT ROUTER ENDPOINT (OpenAI Compatible)
-const ROUTER_URL = "https://router.huggingface.co/hf-inference/v1/chat/completions";
-// We use the exact model ID expected by the router
+
+// 1. URL: The OpenAI-compatible endpoint for HF Router
+const ROUTER_URL = "https://router.huggingface.co/v1/chat/completions";
+
+// 2. Model: The exact model ID for Mistral 7B Instruct v0.3
 const MODEL_ID = "mistralai/Mistral-7B-Instruct-v0.3"; 
 
 let qrCodeDataUrl = null;
@@ -27,13 +30,13 @@ app.get('/', (req, res) => {
                     <div style="text-align:center;">
                         <h1>Scan QR Code</h1>
                         <img src="${qrCodeDataUrl}" alt="QR Code" style="border: 5px solid white; border-radius: 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.1);"/>
-                        <p>Status: Active (HF Router)</p>
+                        <p>Powered by Mistral AI (HF Router)</p>
                     </div>
                 </body>
             </html>
         `);
     } else {
-        res.send('<html><body><h1>Bot is Running!</h1><p>Status: Connected.</p></body></html>');
+        res.send(`<html><body><h1>Bot is Running!</h1><p>Status: Connected.</p></body></html>`);
     }
 });
 
@@ -41,7 +44,7 @@ app.listen(port, () => {
     console.log(`Server running on port ${port}`);
 });
 
-// --- Robust Router Call ---
+// --- Call Hugging Face Router (OpenAI Compatible) ---
 async function callHFRouter(prompt) {
     if (!HF_TOKEN) throw new Error("HUGGINGFACE_TOKEN is missing.");
 
@@ -55,7 +58,7 @@ async function callHFRouter(prompt) {
                 "Content-Type": "application/json"
             },
             body: JSON.stringify({
-                model: MODEL_ID, // Router needs to know which model to route to
+                model: MODEL_ID, // Router needs the model ID here
                 messages: [
                     { role: "user", content: prompt }
                 ],
@@ -71,7 +74,7 @@ async function callHFRouter(prompt) {
 
         const data = await response.json();
         
-        // Parse OpenAI-style response
+        // OpenAI-style response format
         if (data.choices && data.choices.length > 0 && data.choices[0].message) {
             return data.choices[0].message.content;
         } else {
