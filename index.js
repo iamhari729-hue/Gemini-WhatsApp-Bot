@@ -1,9 +1,10 @@
-const { makeWASocket, useMultiFileAuthState, DisconnectReason } = require('@whiskeysockets/baileys');
+const { makeWASocket, useMultiFileAuthState, DisconnectReason, Browsers } = require('@whiskeysockets/baileys');
 const pino = require('pino');
 const express = require('express');
 const qrcode = require('qrcode');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 const fs = require('fs');
+const path = require('path');
 
 const app = express();
 const port = process.env.PORT || 3000;
@@ -25,13 +26,13 @@ app.get('/', (req, res) => {
                         <h1>Scan this QR Code</h1>
                         <p>Open WhatsApp > Linked Devices > Link a Device</p>
                         <img src="${qrCodeDataUrl}" alt="QR Code" style="border: 5px solid white; border-radius: 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.1);"/>
-                        <p><b>Note:</b> If the code doesn't work, refresh this page to get a new one.</p>
+                        <p><b>Note:</b> If the code doesn't work, wait 10 seconds and refresh.</p>
                     </div>
                 </body>
             </html>
         `);
     } else {
-        res.send('<html><body><h1>Bot is Running!</h1><p>Status: Connected (or connecting...). Check logs.</p></body></html>');
+        res.send('<html><body><h1>Bot is Running!</h1><p>Status: Active. Check logs for details.</p></body></html>');
     }
 });
 
@@ -39,21 +40,20 @@ app.listen(port, () => {
     console.log(`Server running on port ${port}`);
 });
 
-// --- WhatsApp Logic (Baileys) ---
+// --- WhatsApp Logic ---
 async function connectToWhatsApp() {
-    // Auth state folder
-    const { state, saveCreds } = await useMultiFileAuthState('auth_info_baileys');
+    const authPath = path.resolve(__dirname, 'auth_info_baileys');
+    const { state, saveCreds } = await useMultiFileAuthState(authPath);
 
     sock = makeWASocket({
         auth: state,
-        printQRInTerminal: true, // Also prints to logs just in case
-        logger: pino({ level: 'silent' }), // Hide debug logs to save space
-        browser: ["RenderBot", "Chrome", "1.0.0"], // Pretend to be a browser
-        connectTimeoutMs: 60000,
+        printQRInTerminal: true,
+        logger: pino({ level: 'silent' }), // Silent logs to prevent spam
+        browser: Browsers.macOS("Desktop"), // Pretend to be a Mac for stability
+        syncFullHistory: false, // Don't sync history to save RAM
     });
 
-    // Handle Connection Events
-    sock.ev.on('connection.update', (update) => {
+    sock.ev.on('connection.update', async (update) => {
         const { connection, lastDisconnect, qr } = update;
 
         if (qr) {
@@ -65,9 +65,15 @@ async function connectToWhatsApp() {
 
         if (connection === 'close') {
             qrCodeDataUrl = null;
-            const shouldReconnect = lastDisconnect.error?.output?.statusCode !== DisconnectReason.loggedOut;
-            console.log('>> Connection closed. Reconnecting?', shouldReconnect);
-            if (shouldReconnect) {
+            const statusCode = lastDisconnect.error?.output?.statusCode;
+            
+            // If logged out or banned, delete session and start fresh
+            if (statusCode === DisconnectReason.loggedOut) {
+                console.log('>> Logged out. Deleting session and restarting...');
+                fs.rmSync(authPath, { recursive: true, force: true });
+                connectToWhatsApp();
+            } else {
+                console.log('>> Connection closed. Reconnecting...');
                 connectToWhatsApp();
             }
         } else if (connection === 'open') {
@@ -76,42 +82,35 @@ async function connectToWhatsApp() {
         }
     });
 
-    // Save Credentials
     sock.ev.on('creds.update', saveCreds);
 
-    // Handle Messages
     sock.ev.on('messages.upsert', async ({ messages }) => {
-        const msg = messages[0];
-        if (!msg.message) return;
+        try {
+            const msg = messages[0];
+            if (!msg.message || msg.key.fromMe) return; // Ignore self-messages for now to prevent loops
 
-        // Get text from message (handles various types like conversation, extendedTextMessage)
-        const messageText = msg.message.conversation || msg.message.extendedTextMessage?.text || '';
-        
-        // Check for command (works for you AND others)
-        if (messageText.startsWith('!gpt ')) {
-            const prompt = messageText.slice(5);
-            const remoteJid = msg.key.remoteJid;
-            console.log(`>> Received Prompt: ${prompt}`);
+            // Extract text
+            const messageText = msg.message.conversation || msg.message.extendedTextMessage?.text || '';
 
-            // Send "typing..." status
-            await sock.sendPresenceUpdate('composing', remoteJid);
+            if (messageText.startsWith('!gpt ')) {
+                const prompt = messageText.slice(5);
+                const remoteJid = msg.key.remoteJid;
+                console.log(`>> Received Prompt: ${prompt}`);
 
-            try {
+                await sock.sendMessage(remoteJid, { react: { text: "⏳", key: msg.key } });
+
                 const model = genAI.getGenerativeModel({ model: "gemini-pro" });
                 const result = await model.generateContent(prompt);
                 const response = await result.response;
                 const text = response.text();
 
-                // Reply to the message
                 await sock.sendMessage(remoteJid, { text: text }, { quoted: msg });
-                console.log('>> Reply sent.');
-            } catch (error) {
-                console.error('Gemini Error:', error);
-                await sock.sendMessage(remoteJid, { text: 'Error processing request.' }, { quoted: msg });
+                await sock.sendMessage(remoteJid, { react: { text: "✅", key: msg.key } });
             }
+        } catch (error) {
+            console.error('>> Error processing message:', error);
         }
     });
 }
 
-// Start the bot
 connectToWhatsApp();
