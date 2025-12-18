@@ -1,4 +1,4 @@
-const { makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, Browsers } = require('@whiskeysockets/baileys');
+const { makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion } = require('@whiskeysockets/baileys');
 const pino = require('pino');
 const express = require('express');
 const qrcode = require('qrcode');
@@ -9,9 +9,6 @@ const path = require('path');
 const app = express();
 const port = process.env.PORT || 3000;
 
-if (!process.env.GEMINI_API_KEY) {
-    console.error(">> CRITICAL ERROR: GEMINI_API_KEY is missing in Render Environment Variables!");
-}
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || "");
 
 let qrCodeDataUrl = null;
@@ -27,7 +24,6 @@ app.get('/', (req, res) => {
                     <div style="text-align:center;">
                         <h1>Scan this QR Code</h1>
                         <img src="${qrCodeDataUrl}" alt="QR Code" style="border: 5px solid white; border-radius: 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.1);"/>
-                        <p>Refresh page if code expires.</p>
                     </div>
                 </body>
             </html>
@@ -41,13 +37,34 @@ app.listen(port, () => {
     console.log(`Server running on port ${port}`);
 });
 
+// --- Smart Gemini Generator ---
+async function generateWithFallback(prompt) {
+    // List of models to try in order
+    const modelsToTry = ["gemini-1.5-flash", "gemini-pro"];
+    
+    for (const modelName of modelsToTry) {
+        try {
+            console.log(`>> Trying model: ${modelName}...`);
+            const model = genAI.getGenerativeModel({ model: modelName });
+            const result = await model.generateContent(prompt);
+            const response = await result.response;
+            return response.text();
+        } catch (error) {
+            console.warn(`>> Failed with ${modelName}: ${error.message}`);
+            // If it's the last model, throw the error
+            if (modelName === modelsToTry[modelsToTry.length - 1]) {
+                throw error;
+            }
+            // Otherwise loop and try the next one
+        }
+    }
+}
+
 // --- WhatsApp Logic ---
 async function connectToWhatsApp() {
     const authPath = path.resolve(__dirname, 'auth_info_baileys');
     const { state, saveCreds } = await useMultiFileAuthState(authPath);
     const { version } = await fetchLatestBaileysVersion();
-
-    console.log(`>> Starting socket with version: ${version.join('.')}`);
 
     sock = makeWASocket({
         version,
@@ -62,7 +79,7 @@ async function connectToWhatsApp() {
         const { connection, lastDisconnect, qr } = update;
 
         if (qr) {
-            console.log('>> New QR Code generated. Scan it now.');
+            console.log('>> New QR Code generated.');
             qrcode.toDataURL(qr, (err, url) => {
                 if (!err) qrCodeDataUrl = url;
             });
@@ -75,7 +92,7 @@ async function connectToWhatsApp() {
             console.log(`>> Connection closed (Status: ${statusCode}). Reconnecting: ${shouldReconnect}`);
             
             if (shouldReconnect) {
-                setTimeout(connectToWhatsApp, 3000);
+                setTimeout(connectToWhatsApp, 2000);
             } else {
                 console.log('>> Session invalidated. Deleting folder and restarting...');
                 fs.rmSync(authPath, { recursive: true, force: true });
@@ -94,35 +111,27 @@ async function connectToWhatsApp() {
             const msg = messages[0];
             if (!msg.message) return;
 
-            const messageText = msg.message.conversation || 
-                              msg.message.extendedTextMessage?.text || 
-                              msg.message.imageMessage?.caption || 
-                              '';
-            
+            const messageText = msg.message.conversation || msg.message.extendedTextMessage?.text || '';
             const sender = msg.key.remoteJid;
-            const isFromMe = msg.key.fromMe;
 
-            console.log(`>> Heard message: "${messageText}" | From Me: ${isFromMe}`);
+            // Simple log to show message arrival
+            if(messageText) console.log(`>> Msg: ${messageText.substring(0, 20)}...`);
 
             if (messageText.startsWith('!gpt ')) {
                 const prompt = messageText.slice(5);
-                console.log(`>> Triggering Gemini with: "${prompt}"`);
+                console.log(`>> Processing GPT request: ${prompt}`);
 
                 // Send typing indicator
                 await sock.sendPresenceUpdate('composing', sender);
 
                 try {
-                    // UPDATED MODEL NAME: Using gemini-1.5-flash which is standard now
-                    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
-                    const result = await model.generateContent(prompt);
-                    const response = await result.response;
-                    const text = response.text();
-
+                    // Use the smart fallback function
+                    const text = await generateWithFallback(prompt);
                     await sock.sendMessage(sender, { text: text }, { quoted: msg });
-                    console.log('>> Reply sent successfully!');
+                    console.log('>> Reply sent!');
                 } catch (aiError) {
-                    console.error('>> Gemini API Error:', aiError);
-                    await sock.sendMessage(sender, { text: "Error: " + aiError.message }, { quoted: msg });
+                    console.error('>> Gemini API Failed:', aiError);
+                    await sock.sendMessage(sender, { text: "Error: Could not connect to Gemini AI. Check API Key." }, { quoted: msg });
                 }
             }
         } catch (error) {
