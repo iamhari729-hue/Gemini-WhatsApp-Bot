@@ -1,13 +1,14 @@
 {
-  "name": "whatsapp-gemini-bot",
+  "name": "whatsapp-gemini-bot-baileys",
   "version": "1.0.0",
-  "description": "WhatsApp bot using Gemini AI deployed on Render",
+  "description": "Lightweight WhatsApp bot using Baileys and Gemini",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
   },
   "dependencies": {
-    "whatsapp-web.js": "^1.23.0",
+    "@whiskeysockets/baileys": "^6.7.9",
+    "pino": "^9.5.0",
     "qrcode": "^1.5.3",
     "express": "^4.18.2",
     "@google/generative-ai": "^0.1.3"
