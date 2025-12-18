@@ -1,4 +1,4 @@
-const { makeWASocket, useMultiFileAuthState, DisconnectReason, Browsers } = require('@whiskeysockets/baileys');
+const { makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion } = require('@whiskeysockets/baileys');
 const pino = require('pino');
 const express = require('express');
 const qrcode = require('qrcode');
@@ -44,15 +44,20 @@ app.listen(port, () => {
 async function connectToWhatsApp() {
     const authPath = path.resolve(__dirname, 'auth_info_baileys');
     const { state, saveCreds } = await useMultiFileAuthState(authPath);
+    
+    // Fetch the latest version of WhatsApp Web to avoid 405 errors
+    const { version, isLatest } = await fetchLatestBaileysVersion();
+    console.log(`>> Using WhatsApp v${version.join('.')}, isLatest: ${isLatest}`);
 
     sock = makeWASocket({
+        version,
         auth: state,
-        printQRInTerminal: false, // Fixed: Disabled deprecated option
+        printQRInTerminal: false, // Disabled to stop deprecation warnings
         logger: pino({ level: 'silent' }), 
-        // MIMIC REAL BROWSER: This helps avoid "Connection Closed" errors
+        // MIMIC A REAL BROWSER (Ubuntu/Chrome)
         browser: ["Ubuntu", "Chrome", "20.0.04"], 
-        syncFullHistory: false,
-        connectTimeoutMs: 60000, 
+        generateHighQualityLinkPreview: true,
+        syncFullHistory: false, 
     });
 
     sock.ev.on('connection.update', async (update) => {
@@ -68,15 +73,15 @@ async function connectToWhatsApp() {
         if (connection === 'close') {
             qrCodeDataUrl = null;
             const statusCode = lastDisconnect.error?.output?.statusCode;
-            const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
+            // 405, 403, and 401 usually mean we need to re-login completely
+            const shouldReconnect = statusCode !== DisconnectReason.loggedOut && statusCode !== 405;
             
             console.log(`>> Connection closed (Status: ${statusCode}). Reconnecting: ${shouldReconnect}`);
 
             if (shouldReconnect) {
-                // Wait 5 seconds before reconnecting to avoid spamming the server
-                setTimeout(connectToWhatsApp, 5000);
+                setTimeout(connectToWhatsApp, 5000); // Wait 5s before reconnecting
             } else {
-                console.log('>> Logged out. Delete session and restart.');
+                console.log('>> Critical Error (Blocked or Logged Out). Deleting session and restarting...');
                 fs.rmSync(authPath, { recursive: true, force: true });
                 connectToWhatsApp();
             }
@@ -100,7 +105,8 @@ async function connectToWhatsApp() {
                 const remoteJid = msg.key.remoteJid;
                 console.log(`>> Received Prompt: ${prompt}`);
 
-                await sock.sendMessage(remoteJid, { react: { text: "⏳", key: msg.key } });
+                // Send typing indicator
+                await sock.sendPresenceUpdate('composing', remoteJid);
 
                 const model = genAI.getGenerativeModel({ model: "gemini-pro" });
                 const result = await model.generateContent(prompt);
@@ -108,7 +114,6 @@ async function connectToWhatsApp() {
                 const text = response.text();
 
                 await sock.sendMessage(remoteJid, { text: text }, { quoted: msg });
-                await sock.sendMessage(remoteJid, { react: { text: "✅", key: msg.key } });
             }
         } catch (error) {
             console.error('>> Error processing message:', error);
