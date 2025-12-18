@@ -1,7 +1,7 @@
 {
-  "name": "whatsapp-gemini-bot-final",
+  "name": "whatsapp-gemini-bot",
   "version": "1.0.0",
-  "description": "Stable WhatsApp bot",
+  "description": "WhatsApp bot",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
