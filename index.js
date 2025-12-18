@@ -47,17 +47,19 @@ async function connectToWhatsApp() {
 
     sock = makeWASocket({
         auth: state,
-        printQRInTerminal: true,
-        logger: pino({ level: 'silent' }), // Silent logs to prevent spam
-        browser: Browsers.macOS("Desktop"), // Pretend to be a Mac for stability
-        syncFullHistory: false, // Don't sync history to save RAM
+        printQRInTerminal: false, // Fixed: Disabled deprecated option
+        logger: pino({ level: 'silent' }), 
+        // MIMIC REAL BROWSER: This helps avoid "Connection Closed" errors
+        browser: ["Ubuntu", "Chrome", "20.0.04"], 
+        syncFullHistory: false,
+        connectTimeoutMs: 60000, 
     });
 
     sock.ev.on('connection.update', async (update) => {
         const { connection, lastDisconnect, qr } = update;
 
         if (qr) {
-            console.log('>> New QR Code generated');
+            console.log('>> New QR Code generated. Check the website.');
             qrcode.toDataURL(qr, (err, url) => {
                 if (!err) qrCodeDataUrl = url;
             });
@@ -66,18 +68,20 @@ async function connectToWhatsApp() {
         if (connection === 'close') {
             qrCodeDataUrl = null;
             const statusCode = lastDisconnect.error?.output?.statusCode;
+            const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
             
-            // If logged out or banned, delete session and start fresh
-            if (statusCode === DisconnectReason.loggedOut) {
-                console.log('>> Logged out. Deleting session and restarting...');
-                fs.rmSync(authPath, { recursive: true, force: true });
-                connectToWhatsApp();
+            console.log(`>> Connection closed (Status: ${statusCode}). Reconnecting: ${shouldReconnect}`);
+
+            if (shouldReconnect) {
+                // Wait 5 seconds before reconnecting to avoid spamming the server
+                setTimeout(connectToWhatsApp, 5000);
             } else {
-                console.log('>> Connection closed. Reconnecting...');
+                console.log('>> Logged out. Delete session and restart.');
+                fs.rmSync(authPath, { recursive: true, force: true });
                 connectToWhatsApp();
             }
         } else if (connection === 'open') {
-            console.log('>> ✅ WhatsApp Connected!');
+            console.log('>> ✅ WhatsApp Connected Successfully!');
             qrCodeDataUrl = null;
         }
     });
@@ -87,9 +91,8 @@ async function connectToWhatsApp() {
     sock.ev.on('messages.upsert', async ({ messages }) => {
         try {
             const msg = messages[0];
-            if (!msg.message || msg.key.fromMe) return; // Ignore self-messages for now to prevent loops
+            if (!msg.message || msg.key.fromMe) return; 
 
-            // Extract text
             const messageText = msg.message.conversation || msg.message.extendedTextMessage?.text || '';
 
             if (messageText.startsWith('!gpt ')) {
