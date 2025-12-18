@@ -2,19 +2,18 @@ const { makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBailey
 const pino = require('pino');
 const express = require('express');
 const qrcode = require('qrcode');
-const { GoogleGenerativeAI } = require('@google/generative-ai');
 const fs = require('fs');
 const path = require('path');
 
 const app = express();
 const port = process.env.PORT || 3000;
 
-// Initialize Gemini
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || "");
+// Gemini API Configuration
+const API_KEY = process.env.GEMINI_API_KEY || "";
+const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${API_KEY}`;
 
 let qrCodeDataUrl = null;
 let sock;
-let activeModelName = null; 
 
 // --- Express Server ---
 app.get('/', (req, res) => {
@@ -26,13 +25,13 @@ app.get('/', (req, res) => {
                     <div style="text-align:center;">
                         <h1>Scan this QR Code</h1>
                         <img src="${qrCodeDataUrl}" alt="QR Code" style="border: 5px solid white; border-radius: 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.1);"/>
-                        <p><b>Diagnostic Mode:</b> Check Render Logs for "AVAILABLE MODELS"</p>
+                        <p>Status: Ready to pair</p>
                     </div>
                 </body>
             </html>
         `);
     } else {
-        res.send(`<html><body><h1>Bot is Active!</h1><p>Status: Connected.</p><p><b>Active Model:</b> ${activeModelName || "Checking..."}</p></body></html>`);
+        res.send(`<html><body><h1>Bot is Active!</h1><p>Status: Connected.</p></body></html>`);
     }
 });
 
@@ -40,47 +39,38 @@ app.listen(port, () => {
     console.log(`Server running on port ${port}`);
 });
 
-// --- DIAGNOSTIC TOOL ---
-async function findWorkingModel() {
-    console.log("\n\n==================================================");
-    console.log(">> STARTING MODEL DIAGNOSTICS...");
-    console.log("==================================================\n");
+// --- Direct Gemini API Call (No SDK) ---
+async function callGeminiDirect(prompt) {
+    if (!API_KEY) throw new Error("API Key is missing.");
 
-    try {
-        // 1. First, try to fallback to a hardcoded list if listing fails
-        const candidates = [
-            "gemini-1.5-flash",
-            "gemini-1.5-flash-latest",
-            "gemini-1.5-pro", 
-            "gemini-pro",
-            "gemini-1.0-pro"
-        ];
+    console.log(">> Sending request via Direct Fetch API...");
+    
+    const response = await fetch(GEMINI_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+            contents: [{ parts: [{ text: prompt }] }]
+        })
+    });
 
-        for (const model of candidates) {
-            try {
-                console.log(`>> Testing candidate: ${model}...`);
-                const m = genAI.getGenerativeModel({ model: model });
-                await m.generateContent("Test");
-                console.log(`>> ✅ SUCCESS! ${model} is working.`);
-                activeModelName = model;
-                return;
-            } catch (e) {
-                console.log(`>> ❌ Failed ${model}: ${e.message.split(':')[0]}`);
-            }
-        }
-        
-        console.log("\n>> ⚠️ ALL STANDARD MODELS FAILED. Your API Key may be region-locked.");
-        
-    } catch (error) {
-        console.error(">> Diagnostic Error:", error);
+    const data = await response.json();
+
+    if (!response.ok) {
+        // Log the full error from Google to understand what's wrong
+        console.error(">> Google API Error:", JSON.stringify(data, null, 2));
+        throw new Error(`API Error: ${data.error?.message || response.statusText}`);
+    }
+
+    // Extract text from response
+    if (data.candidates && data.candidates.length > 0 && data.candidates[0].content) {
+        return data.candidates[0].content.parts[0].text;
+    } else {
+        throw new Error("No response content from Gemini.");
     }
 }
 
 // --- WhatsApp Logic ---
 async function connectToWhatsApp() {
-    // Run diagnostics first
-    await findWorkingModel();
-
     const authPath = path.resolve(__dirname, 'auth_info_baileys');
     const { state, saveCreds } = await useMultiFileAuthState(authPath);
     const { version } = await fetchLatestBaileysVersion();
@@ -136,25 +126,15 @@ async function connectToWhatsApp() {
             if (messageText.startsWith('!gpt ')) {
                 const prompt = messageText.slice(5);
                 console.log(`>> Received Prompt: "${prompt}"`);
-
-                if (!activeModelName) {
-                    await sock.sendMessage(sender, { text: "⚠️ API Error: No working Gemini models found for your API Key. Check Render logs." }, { quoted: msg });
-                    return;
-                }
-
                 await sock.sendPresenceUpdate('composing', sender);
 
                 try {
-                    console.log(`>> Generating with: ${activeModelName}`);
-                    const model = genAI.getGenerativeModel({ model: activeModelName });
-                    const result = await model.generateContent(prompt);
-                    const response = await result.response;
-                    const text = response.text();
-
+                    // Use the direct fetch function
+                    const text = await callGeminiDirect(prompt);
                     await sock.sendMessage(sender, { text: text }, { quoted: msg });
                     console.log('>> Reply sent!');
                 } catch (aiError) {
-                    console.error('>> Generation Failed:', aiError.message);
+                    console.error('>> Gemini Failure:', aiError.message);
                     await sock.sendMessage(sender, { text: "⚠️ Error: " + aiError.message }, { quoted: msg });
                 }
             }
