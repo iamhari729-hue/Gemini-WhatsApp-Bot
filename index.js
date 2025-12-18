@@ -1,4 +1,4 @@
-const { Client, LocalAuth } = require('whatsapp-web.js');
+const { Client, NoAuth } = require('whatsapp-web.js'); // Changed to NoAuth for stability
 const qrcode = require('qrcode');
 const express = require('express');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
@@ -8,9 +8,13 @@ const port = process.env.PORT || 3000;
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 let qrCodeDataUrl = null;
+let isConnected = false;
 
+// --- Express Server ---
 app.get('/', (req, res) => {
-    if (qrCodeDataUrl) {
+    if (isConnected) {
+        res.send('<html><body style="font-family: sans-serif; text-align: center; padding-top: 50px;"><h1>✅ Bot is Connected!</h1><p>Go to WhatsApp and send <b>!gpt hello</b> to yourself.</p></body></html>');
+    } else if (qrCodeDataUrl) {
         res.send(`
             <html>
                 <head><title>WhatsApp Bot QR</title></head>
@@ -18,13 +22,13 @@ app.get('/', (req, res) => {
                     <div style="text-align:center;">
                         <h1>Scan this QR Code</h1>
                         <img src="${qrCodeDataUrl}" alt="QR Code" style="border: 5px solid white; border-radius: 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.1);"/>
-                        <p>Refresh if you don't see a code yet.</p>
+                        <p>Refresh page if code expires.</p>
                     </div>
                 </body>
             </html>
         `);
     } else {
-        res.send('<html><body><h1>Client is Ready!</h1><p>Bot is connected. Send <b>!gpt hello</b> to yourself to test.</p></body></html>');
+        res.send('<html><body><h1>Please Wait...</h1><p>Initializing...</p></body></html>');
     }
 });
 
@@ -32,10 +36,11 @@ app.listen(port, () => {
     console.log(`Server running on port ${port}`);
 });
 
+// --- WhatsApp Client ---
+console.log("Initializing WhatsApp Client...");
 const client = new Client({
-    authStrategy: new LocalAuth(),
+    authStrategy: new NoAuth(), // Safer for free tier testing
     puppeteer: {
-        // Use the installed Chrome
         executablePath: '/usr/bin/google-chrome-stable',
         headless: true,
         args: [
@@ -47,45 +52,56 @@ const client = new Client({
             '--no-zygote',
             '--disable-gpu',
             '--disable-extensions',
-            '--disable-software-rasterizer' // Reduces memory usage further
+            '--disable-software-rasterizer' 
         ],
-    },
-    // CRITICAL FIX: Locks the WA version to a stable, lighter release to prevent crashes
-    webVersionCache: {
-        type: 'remote',
-        remotePath: 'https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/2.2412.54.html',
     }
 });
 
 client.on('qr', (qr) => {
-    console.log('QR RECEIVED', qr);
+    console.log('>> QR CODE RECEIVED. Please scan it now.');
     qrcode.toDataURL(qr, (err, url) => {
-        if (err) {
-            console.error('Error generating QR image', err);
-            return;
+        if (!err) {
+            qrCodeDataUrl = url;
         }
-        qrCodeDataUrl = url;
     });
 });
 
 client.on('ready', () => {
-    console.log('Client is ready!');
+    console.log('>> ✅ CLIENT IS READY! Bot is successfully logged in.');
+    isConnected = true;
     qrCodeDataUrl = null;
 });
 
+client.on('authenticated', () => {
+    console.log('>> Authenticated successfully!');
+});
+
+client.on('auth_failure', (msg) => {
+    console.error('>> AUTH FAILURE', msg);
+});
+
+// Using message_create to hear your own messages
 client.on('message_create', async msg => {
+    // Log EVERY message to check if bot is "hearing" you
+    console.log(`>> Message detected from ${msg.from}: ${msg.body}`);
+
     if (msg.body.startsWith('!gpt ')) {
         const prompt = msg.body.slice(5); 
-        console.log(`Received prompt: ${prompt}`);
+        console.log(`>> Processing GPT request: "${prompt}"`);
 
         try {
+            await msg.reply("Thinking..."); // Immediate feedback
+            
             const model = genAI.getGenerativeModel({ model: "gemini-pro" });
             const result = await model.generateContent(prompt);
             const response = await result.response;
             const text = response.text();
+            
+            console.log(">> Gemini response generated. Sending reply...");
             await msg.reply(text);
+            console.log(">> Reply sent!");
         } catch (error) {
-            console.error('Error fetching from Gemini:', error);
+            console.error('>> ERROR interacting with Gemini:', error);
             await msg.reply('Error: ' + error.message);
         }
     }
