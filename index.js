@@ -8,13 +8,11 @@ const path = require('path');
 const app = express();
 const port = process.env.PORT || 3000;
 
-// Env Vars
+// Hugging Face Configuration
 const HF_TOKEN = process.env.HUGGINGFACE_TOKEN;
-
-// 1. URL: The OpenAI-compatible endpoint for HF Router
-const ROUTER_URL = "https://router.huggingface.co/v1/chat/completions";
-
-// 2. Model: The exact model ID for Mistral 7B Instruct v0.3
+// Use the standardized OpenAI-compatible endpoint
+const ROUTER_URL = "https://router.huggingface.co/hf-inference/v1/chat/completions";
+// Use a very stable model ID
 const MODEL_ID = "mistralai/Mistral-7B-Instruct-v0.3"; 
 
 let qrCodeDataUrl = null;
@@ -25,10 +23,10 @@ app.get('/', (req, res) => {
     if (qrCodeDataUrl) {
         res.send(`
             <html>
-                <head><title>WhatsApp Bot</title></head>
-                <body style="display:flex; justify-content:center; align-items:center; height:100vh; background:#f0f2f5; font-family:sans-serif;">
+                <head><title>WhatsApp Bot QR</title></head>
+                <body style="display:flex; justify-content:center; align-items:center; height:100vh; background:#f0f2f5;">
                     <div style="text-align:center;">
-                        <h1>Scan QR Code</h1>
+                        <h1>Scan this QR Code</h1>
                         <img src="${qrCodeDataUrl}" alt="QR Code" style="border: 5px solid white; border-radius: 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.1);"/>
                         <p>Powered by Mistral AI (HF Router)</p>
                     </div>
@@ -36,7 +34,7 @@ app.get('/', (req, res) => {
             </html>
         `);
     } else {
-        res.send(`<html><body><h1>Bot is Running!</h1><p>Status: Connected.</p></body></html>`);
+        res.send('<html><body><h1>Bot is Active!</h1><p>Status: Connected.</p></body></html>');
     }
 });
 
@@ -46,9 +44,9 @@ app.listen(port, () => {
 
 // --- Call Hugging Face Router (OpenAI Compatible) ---
 async function callHFRouter(prompt) {
-    if (!HF_TOKEN) throw new Error("HUGGINGFACE_TOKEN is missing.");
+    if (!HF_TOKEN) throw new Error("HUGGINGFACE_TOKEN is missing in Environment Variables!");
 
-    console.log(">> Sending request to HF Router (OpenAI Standard)...");
+    console.log(">> Sending request to HF Router...");
     
     try {
         const response = await fetch(ROUTER_URL, {
@@ -58,7 +56,7 @@ async function callHFRouter(prompt) {
                 "Content-Type": "application/json"
             },
             body: JSON.stringify({
-                model: MODEL_ID, // Router needs the model ID here
+                model: MODEL_ID, 
                 messages: [
                     { role: "user", content: prompt }
                 ],
@@ -69,12 +67,13 @@ async function callHFRouter(prompt) {
 
         if (!response.ok) {
             const errText = await response.text();
+            // If 404, it might mean the model is currently offline in the router
+            // We can fallback to another free model
             throw new Error(`Router Error (${response.status}): ${errText}`);
         }
 
         const data = await response.json();
         
-        // OpenAI-style response format
         if (data.choices && data.choices.length > 0 && data.choices[0].message) {
             return data.choices[0].message.content;
         } else {
