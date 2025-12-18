@@ -6,13 +6,10 @@ const { GoogleGenerativeAI } = require('@google/generative-ai');
 const app = express();
 const port = process.env.PORT || 3000;
 
-// Initialize Gemini
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-
-// Global variable to store the latest QR code data URL
 let qrCodeDataUrl = null;
 
-// --- Express Server Setup ---
+// --- Express Server ---
 app.get('/', (req, res) => {
     if (qrCodeDataUrl) {
         res.send(`
@@ -28,7 +25,7 @@ app.get('/', (req, res) => {
             </html>
         `);
     } else {
-        res.send('<html><body><h1>Client is Ready!</h1><p>The bot is connected. Go to WhatsApp and send <b>!gpt hello</b> to test it.</p></body></html>');
+        res.send('<html><body><h1>Client is Ready!</h1><p>Bot is connected. Send <b>!gpt hello</b> to yourself to test.</p></body></html>');
     }
 });
 
@@ -36,11 +33,22 @@ app.listen(port, () => {
     console.log(`Server running on port ${port}`);
 });
 
-// --- WhatsApp Client Setup ---
+// --- WhatsApp Client ---
 const client = new Client({
     authStrategy: new LocalAuth(),
     puppeteer: {
-        args: ['--no-sandbox', '--disable-setuid-sandbox'],
+        // CRITICAL: Point to the Chrome we installed in Docker
+        executablePath: '/usr/bin/google-chrome-stable', 
+        headless: true,
+        args: [
+            '--no-sandbox',
+            '--disable-setuid-sandbox',
+            '--disable-dev-shm-usage', // Vital for Docker memory
+            '--disable-accelerated-2d-canvas',
+            '--no-first-run',
+            '--no-zygote',
+            '--disable-gpu'
+        ],
     }
 });
 
@@ -57,14 +65,12 @@ client.on('qr', (qr) => {
 
 client.on('ready', () => {
     console.log('Client is ready!');
-    qrCodeDataUrl = null; // Clear QR code once connected
+    qrCodeDataUrl = null;
 });
 
-// --- Message Handling ---
-// CHANGED: Using 'message_create' instead of 'message' so it listens to your own messages too
 client.on('message_create', async msg => {
     if (msg.body.startsWith('!gpt ')) {
-        const prompt = msg.body.slice(5); // Remove '!gpt ' from the start
+        const prompt = msg.body.slice(5); 
         console.log(`Received prompt: ${prompt}`);
 
         try {
@@ -72,11 +78,10 @@ client.on('message_create', async msg => {
             const result = await model.generateContent(prompt);
             const response = await result.response;
             const text = response.text();
-
             await msg.reply(text);
         } catch (error) {
             console.error('Error fetching from Gemini:', error);
-            await msg.reply('Sorry, I encountered an error processing your request.');
+            await msg.reply('Error: ' + error.message);
         }
     }
 });
