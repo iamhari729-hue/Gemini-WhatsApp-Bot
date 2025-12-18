@@ -2,16 +2,17 @@ const { makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBailey
 const pino = require('pino');
 const express = require('express');
 const qrcode = require('qrcode');
+const { HfInference } = require('@huggingface/inference');
 const fs = require('fs');
 const path = require('path');
 
 const app = express();
 const port = process.env.PORT || 3000;
 
-const API_KEY = process.env.GEMINI_API_KEY || "";
-// USAGE OF PROXY TO BYPASS REGION BLOCK
-// We use the reverse proxy which mimics a browser request
-const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${API_KEY}`;
+// Initialize Hugging Face
+const hf = new HfInference(process.env.HUGGINGFACE_TOKEN);
+// Mistral-7B is a very smart, fast, and free model
+const MODEL_NAME = "mistralai/Mistral-7B-Instruct-v0.2";
 
 let qrCodeDataUrl = null;
 let sock;
@@ -21,17 +22,18 @@ app.get('/', (req, res) => {
     if (qrCodeDataUrl) {
         res.send(`
             <html>
-                <head><title>WhatsApp Bot QR</title></head>
-                <body style="display:flex; justify-content:center; align-items:center; height:100vh; background:#f0f2f5;">
+                <head><title>WhatsApp Bot</title></head>
+                <body style="display:flex; justify-content:center; align-items:center; height:100vh; background:#f0f2f5; font-family:sans-serif;">
                     <div style="text-align:center;">
-                        <h1>Scan this QR Code</h1>
+                        <h1>Scan QR Code</h1>
                         <img src="${qrCodeDataUrl}" alt="QR Code" style="border: 5px solid white; border-radius: 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.1);"/>
+                        <p>Powered by Mistral AI ⚡</p>
                     </div>
                 </body>
             </html>
         `);
     } else {
-        res.send(`<html><body><h1>Bot is Active!</h1><p>Status: Connected.</p></body></html>`);
+        res.send('<html><body><h1>Bot is Running!</h1><p>Status: Connected to WhatsApp.</p></body></html>');
     }
 });
 
@@ -39,37 +41,23 @@ app.listen(port, () => {
     console.log(`Server running on port ${port}`);
 });
 
-// --- Direct Gemini API Call with Custom Headers ---
-async function callGeminiDirect(prompt) {
-    if (!API_KEY) throw new Error("API Key is missing.");
-
-    console.log(">> Sending request...");
-    
-    // We add specific headers that make the request look like it comes from a browser
-    // This often bypasses the strict IP block for data centers
-    const response = await fetch(GEMINI_URL, {
-        method: "POST",
-        headers: { 
-            "Content-Type": "application/json",
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-        },
-        body: JSON.stringify({
-            contents: [{ parts: [{ text: prompt }] }]
-        })
-    });
-
-    const data = await response.json();
-
-    if (!response.ok) {
-        console.error(">> Google API Error:", JSON.stringify(data, null, 2));
-        // If 404 persist, we might need a different base URL like vertex, but usually headers fix it for free tier
-        throw new Error(`API Error: ${data.error?.message || response.statusText}`);
-    }
-
-    if (data.candidates && data.candidates.length > 0 && data.candidates[0].content) {
-        return data.candidates[0].content.parts[0].text;
-    } else {
-        throw new Error("No response content from Gemini.");
+// --- AI Logic (Mistral) ---
+async function getMistralResponse(prompt) {
+    try {
+        console.log(">> Sending request to Mistral AI...");
+        const result = await hf.textGeneration({
+            model: MODEL_NAME,
+            inputs: `<s>[INST] ${prompt} [/INST]`, // Format for Mistral
+            parameters: {
+                max_new_tokens: 500,
+                temperature: 0.7,
+                return_full_text: false
+            }
+        });
+        return result.generated_text;
+    } catch (error) {
+        console.error(">> Hugging Face Error:", error);
+        return "Sorry, I couldn't process that. (API Error)";
     }
 }
 
@@ -127,13 +115,9 @@ async function connectToWhatsApp() {
                 console.log(`>> Received Prompt: "${prompt}"`);
                 await sock.sendPresenceUpdate('composing', sender);
 
-                try {
-                    const text = await callGeminiDirect(prompt);
-                    await sock.sendMessage(sender, { text: text }, { quoted: msg });
-                    console.log('>> Reply sent!');
-                } catch (aiError) {
-                    await sock.sendMessage(sender, { text: "⚠️ API Error: " + aiError.message }, { quoted: msg });
-                }
+                const text = await getMistralResponse(prompt);
+                await sock.sendMessage(sender, { text: text }, { quoted: msg });
+                console.log('>> Reply sent!');
             }
         } catch (error) {
             console.error('>> Handler Error:', error);
