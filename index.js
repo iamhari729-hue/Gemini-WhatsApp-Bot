@@ -9,7 +9,10 @@ const path = require('path');
 const app = express();
 const port = process.env.PORT || 3000;
 
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+if (!process.env.GEMINI_API_KEY) {
+    console.error(">> CRITICAL ERROR: GEMINI_API_KEY is missing in Render Environment Variables!");
+}
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || "");
 
 let qrCodeDataUrl = null;
 let sock;
@@ -24,12 +27,13 @@ app.get('/', (req, res) => {
                     <div style="text-align:center;">
                         <h1>Scan this QR Code</h1>
                         <img src="${qrCodeDataUrl}" alt="QR Code" style="border: 5px solid white; border-radius: 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.1);"/>
+                        <p>Refresh page if code expires.</p>
                     </div>
                 </body>
             </html>
         `);
     } else {
-        res.send('<html><body><h1>Bot is Running!</h1><p>Status: Active. Send <b>!gpt hello</b> to test.</p></body></html>');
+        res.send('<html><body><h1>Bot is Active!</h1><p>Status: Connected. Send <b>!gpt hello</b> to yourself.</p></body></html>');
     }
 });
 
@@ -42,6 +46,8 @@ async function connectToWhatsApp() {
     const authPath = path.resolve(__dirname, 'auth_info_baileys');
     const { state, saveCreds } = await useMultiFileAuthState(authPath);
     const { version } = await fetchLatestBaileysVersion();
+
+    console.log(`>> Starting socket with version: ${version.join('.')}`);
 
     sock = makeWASocket({
         version,
@@ -56,7 +62,7 @@ async function connectToWhatsApp() {
         const { connection, lastDisconnect, qr } = update;
 
         if (qr) {
-            console.log('>> New QR Code generated.');
+            console.log('>> New QR Code generated. Scan it now.');
             qrcode.toDataURL(qr, (err, url) => {
                 if (!err) qrCodeDataUrl = url;
             });
@@ -69,9 +75,9 @@ async function connectToWhatsApp() {
             console.log(`>> Connection closed (Status: ${statusCode}). Reconnecting: ${shouldReconnect}`);
             
             if (shouldReconnect) {
-                connectToWhatsApp();
+                setTimeout(connectToWhatsApp, 3000);
             } else {
-                console.log('>> Critical Error. Deleting session...');
+                console.log('>> Session invalidated. Deleting folder and restarting...');
                 fs.rmSync(authPath, { recursive: true, force: true });
                 connectToWhatsApp();
             }
@@ -88,32 +94,39 @@ async function connectToWhatsApp() {
             const msg = messages[0];
             if (!msg.message) return;
 
-            // 1. Log EVERY message received to debug
-            const messageText = msg.message.conversation || msg.message.extendedTextMessage?.text || '';
+            const messageText = msg.message.conversation || 
+                              msg.message.extendedTextMessage?.text || 
+                              msg.message.imageMessage?.caption || 
+                              '';
+            
             const sender = msg.key.remoteJid;
             const isFromMe = msg.key.fromMe;
 
-            console.log(`>> Message Received: "${messageText}" from ${isFromMe ? "ME" : sender}`);
+            console.log(`>> Heard message: "${messageText}" | From Me: ${isFromMe}`);
 
-            // 2. Process Command (Removed 'fromMe' check)
             if (messageText.startsWith('!gpt ')) {
                 const prompt = messageText.slice(5);
-                console.log(`>> Processing GPT request: ${prompt}`);
+                console.log(`>> Triggering Gemini with: "${prompt}"`);
 
                 // Send typing indicator
                 await sock.sendPresenceUpdate('composing', sender);
 
-                const model = genAI.getGenerativeModel({ model: "gemini-pro" });
-                const result = await model.generateContent(prompt);
-                const response = await result.response;
-                const text = response.text();
+                try {
+                    // UPDATED MODEL NAME: Using gemini-1.5-flash which is standard now
+                    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+                    const result = await model.generateContent(prompt);
+                    const response = await result.response;
+                    const text = response.text();
 
-                // Reply
-                await sock.sendMessage(sender, { text: text }, { quoted: msg });
-                console.log('>> Reply Sent!');
+                    await sock.sendMessage(sender, { text: text }, { quoted: msg });
+                    console.log('>> Reply sent successfully!');
+                } catch (aiError) {
+                    console.error('>> Gemini API Error:', aiError);
+                    await sock.sendMessage(sender, { text: "Error: " + aiError.message }, { quoted: msg });
+                }
             }
         } catch (error) {
-            console.error('>> Error processing message:', error);
+            console.error('>> Message Handler Error:', error);
         }
     });
 }
