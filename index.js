@@ -10,12 +10,11 @@ const app = express();
 const port = process.env.PORT || 3000;
 
 // Initialize Gemini
-// Note: We don't set a model here, we select it dynamically below
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || "");
 
 let qrCodeDataUrl = null;
 let sock;
-let activeModelName = null; // We will find a working model and save it here
+let activeModelName = null; 
 
 // --- Express Server ---
 app.get('/', (req, res) => {
@@ -27,13 +26,13 @@ app.get('/', (req, res) => {
                     <div style="text-align:center;">
                         <h1>Scan this QR Code</h1>
                         <img src="${qrCodeDataUrl}" alt="QR Code" style="border: 5px solid white; border-radius: 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.1);"/>
-                        <p>Status: ${activeModelName ? "✅ Using " + activeModelName : "⚠️ Searching for model..."}</p>
+                        <p><b>Diagnostic Mode:</b> Check Render Logs for "AVAILABLE MODELS"</p>
                     </div>
                 </body>
             </html>
         `);
     } else {
-        res.send(`<html><body><h1>Bot is Active!</h1><p>Status: Connected.</p><p><b>Active Model:</b> ${activeModelName || "None (Check Logs)"}</p></body></html>`);
+        res.send(`<html><body><h1>Bot is Active!</h1><p>Status: Connected.</p><p><b>Active Model:</b> ${activeModelName || "Checking..."}</p></body></html>`);
     }
 });
 
@@ -41,50 +40,45 @@ app.listen(port, () => {
     console.log(`Server running on port ${port}`);
 });
 
-// --- Smart Model Discovery ---
+// --- DIAGNOSTIC TOOL ---
 async function findWorkingModel() {
-    console.log(">> 🔍 Searching for a working Gemini model...");
-    
-    // We try these in order. The first one that doesn't 404/403 is the winner.
-    const candidates = [
-        "gemini-1.5-flash",
-        "gemini-1.5-flash-latest",
-        "gemini-1.5-flash-001",
-        "gemini-1.5-pro",
-        "gemini-1.5-pro-latest",
-        "gemini-1.5-pro-001",
-        "gemini-pro",
-        "gemini-1.0-pro"
-    ];
+    console.log("\n\n==================================================");
+    console.log(">> STARTING MODEL DIAGNOSTICS...");
+    console.log("==================================================\n");
 
-    for (const modelName of candidates) {
-        try {
-            const model = genAI.getGenerativeModel({ model: modelName });
-            // Run a tiny test prompt
-            await model.generateContent("Test");
-            
-            console.log(`>> ✅ SUCCESS: Found working model: "${modelName}"`);
-            activeModelName = modelName;
-            return;
-        } catch (error) {
-            // Ignore 404 (Not Found) and 403 (Permission Denied) and keep looking
-            if (error.message.includes("404") || error.message.includes("403")) {
-                console.log(`>> Model "${modelName}" not available (${error.message.split(':')[0]})`);
-            } else {
-                // If it's a different error (like Quota), the model exists but we are out of limit.
-                // We'll accept it anyway because it's "valid".
-                console.log(`>> Model "${modelName}" found (with error: ${error.message})`);
-                activeModelName = modelName;
+    try {
+        // 1. First, try to fallback to a hardcoded list if listing fails
+        const candidates = [
+            "gemini-1.5-flash",
+            "gemini-1.5-flash-latest",
+            "gemini-1.5-pro", 
+            "gemini-pro",
+            "gemini-1.0-pro"
+        ];
+
+        for (const model of candidates) {
+            try {
+                console.log(`>> Testing candidate: ${model}...`);
+                const m = genAI.getGenerativeModel({ model: model });
+                await m.generateContent("Test");
+                console.log(`>> ✅ SUCCESS! ${model} is working.`);
+                activeModelName = model;
                 return;
+            } catch (e) {
+                console.log(`>> ❌ Failed ${model}: ${e.message.split(':')[0]}`);
             }
         }
+        
+        console.log("\n>> ⚠️ ALL STANDARD MODELS FAILED. Your API Key may be region-locked.");
+        
+    } catch (error) {
+        console.error(">> Diagnostic Error:", error);
     }
-    console.error(">> ❌ CRITICAL: No working models found. Check API Key Region availability.");
 }
 
 // --- WhatsApp Logic ---
 async function connectToWhatsApp() {
-    // 1. Find the model FIRST before connecting
+    // Run diagnostics first
     await findWorkingModel();
 
     const authPath = path.resolve(__dirname, 'auth_info_baileys');
@@ -144,15 +138,14 @@ async function connectToWhatsApp() {
                 console.log(`>> Received Prompt: "${prompt}"`);
 
                 if (!activeModelName) {
-                    await sock.sendMessage(sender, { text: "⚠️ Error: No Gemini model is available for this API Key." }, { quoted: msg });
+                    await sock.sendMessage(sender, { text: "⚠️ API Error: No working Gemini models found for your API Key. Check Render logs." }, { quoted: msg });
                     return;
                 }
 
                 await sock.sendPresenceUpdate('composing', sender);
 
                 try {
-                    // CRITICAL FIX: Use the model we found earlier
-                    console.log(`>> Generating with active model: ${activeModelName}`);
+                    console.log(`>> Generating with: ${activeModelName}`);
                     const model = genAI.getGenerativeModel({ model: activeModelName });
                     const result = await model.generateContent(prompt);
                     const response = await result.response;
@@ -162,7 +155,7 @@ async function connectToWhatsApp() {
                     console.log('>> Reply sent!');
                 } catch (aiError) {
                     console.error('>> Generation Failed:', aiError.message);
-                    await sock.sendMessage(sender, { text: "⚠️ AI Error: " + aiError.message }, { quoted: msg });
+                    await sock.sendMessage(sender, { text: "⚠️ Error: " + aiError.message }, { quoted: msg });
                 }
             }
         } catch (error) {
