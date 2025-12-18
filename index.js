@@ -37,26 +37,37 @@ app.listen(port, () => {
     console.log(`Server running on port ${port}`);
 });
 
-// --- Smart Gemini Generator ---
-async function generateWithFallback(prompt) {
-    // List of models to try in order
-    const modelsToTry = ["gemini-1.5-flash", "gemini-pro"];
-    
-    for (const modelName of modelsToTry) {
-        try {
-            console.log(`>> Trying model: ${modelName}...`);
-            const model = genAI.getGenerativeModel({ model: modelName });
-            const result = await model.generateContent(prompt);
-            const response = await result.response;
-            return response.text();
-        } catch (error) {
-            console.warn(`>> Failed with ${modelName}: ${error.message}`);
-            // If it's the last model, throw the error
-            if (modelName === modelsToTry[modelsToTry.length - 1]) {
-                throw error;
-            }
-            // Otherwise loop and try the next one
-        }
+// --- Dynamic Model Finder ---
+async function getAvailableModel() {
+    try {
+        // Obsolete or standard models to fallback on
+        const fallbackModel = "gemini-pro"; 
+        return fallbackModel; 
+    } catch (error) {
+        console.error("Error finding models:", error);
+        return "gemini-pro";
+    }
+}
+
+// --- Smart Generator ---
+async function generateResponse(prompt) {
+    // 1. Try gemini-1.5-flash first (Standard)
+    try {
+        const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+        const result = await model.generateContent(prompt);
+        return result.response.text();
+    } catch (e) {
+        console.log(`>> Flash failed (${e.message}). Trying gemini-pro...`);
+    }
+
+    // 2. Try gemini-pro (Legacy)
+    try {
+        const model = genAI.getGenerativeModel({ model: "gemini-pro" });
+        const result = await model.generateContent(prompt);
+        return result.response.text();
+    } catch (e) {
+        console.log(`>> Pro failed (${e.message}).`);
+        throw new Error(`All models failed. Your API Key might be restricted. Error: ${e.message}`);
     }
 }
 
@@ -94,7 +105,7 @@ async function connectToWhatsApp() {
             if (shouldReconnect) {
                 setTimeout(connectToWhatsApp, 2000);
             } else {
-                console.log('>> Session invalidated. Deleting folder and restarting...');
+                console.log('>> Session invalidated. Restarting...');
                 fs.rmSync(authPath, { recursive: true, force: true });
                 connectToWhatsApp();
             }
@@ -114,24 +125,18 @@ async function connectToWhatsApp() {
             const messageText = msg.message.conversation || msg.message.extendedTextMessage?.text || '';
             const sender = msg.key.remoteJid;
 
-            // Simple log to show message arrival
-            if(messageText) console.log(`>> Msg: ${messageText.substring(0, 20)}...`);
-
             if (messageText.startsWith('!gpt ')) {
                 const prompt = messageText.slice(5);
                 console.log(`>> Processing GPT request: ${prompt}`);
-
-                // Send typing indicator
                 await sock.sendPresenceUpdate('composing', sender);
 
                 try {
-                    // Use the smart fallback function
-                    const text = await generateWithFallback(prompt);
+                    const text = await generateResponse(prompt);
                     await sock.sendMessage(sender, { text: text }, { quoted: msg });
                     console.log('>> Reply sent!');
                 } catch (aiError) {
-                    console.error('>> Gemini API Failed:', aiError);
-                    await sock.sendMessage(sender, { text: "Error: Could not connect to Gemini AI. Check API Key." }, { quoted: msg });
+                    console.error('>> Gemini Failure:', aiError.message);
+                    await sock.sendMessage(sender, { text: "⚠️ Error: " + aiError.message }, { quoted: msg });
                 }
             }
         } catch (error) {
