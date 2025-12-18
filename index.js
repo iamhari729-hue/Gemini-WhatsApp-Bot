@@ -9,10 +9,13 @@ const path = require('path');
 const app = express();
 const port = process.env.PORT || 3000;
 
+// Initialize Gemini
+// Note: We don't set a model here, we select it dynamically below
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || "");
 
 let qrCodeDataUrl = null;
 let sock;
+let activeModelName = null; // We will find a working model and save it here
 
 // --- Express Server ---
 app.get('/', (req, res) => {
@@ -24,12 +27,13 @@ app.get('/', (req, res) => {
                     <div style="text-align:center;">
                         <h1>Scan this QR Code</h1>
                         <img src="${qrCodeDataUrl}" alt="QR Code" style="border: 5px solid white; border-radius: 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.1);"/>
+                        <p>Status: ${activeModelName ? "✅ Using " + activeModelName : "⚠️ Searching for model..."}</p>
                     </div>
                 </body>
             </html>
         `);
     } else {
-        res.send('<html><body><h1>Bot is Active!</h1><p>Status: Connected. Send <b>!gpt hello</b> to yourself.</p></body></html>');
+        res.send(`<html><body><h1>Bot is Active!</h1><p>Status: Connected.</p><p><b>Active Model:</b> ${activeModelName || "None (Check Logs)"}</p></body></html>`);
     }
 });
 
@@ -37,42 +41,52 @@ app.listen(port, () => {
     console.log(`Server running on port ${port}`);
 });
 
-// --- Dynamic Model Finder ---
-async function getAvailableModel() {
-    try {
-        // Obsolete or standard models to fallback on
-        const fallbackModel = "gemini-pro"; 
-        return fallbackModel; 
-    } catch (error) {
-        console.error("Error finding models:", error);
-        return "gemini-pro";
-    }
-}
+// --- Smart Model Discovery ---
+async function findWorkingModel() {
+    console.log(">> 🔍 Searching for a working Gemini model...");
+    
+    // We try these in order. The first one that doesn't 404/403 is the winner.
+    const candidates = [
+        "gemini-1.5-flash",
+        "gemini-1.5-flash-latest",
+        "gemini-1.5-flash-001",
+        "gemini-1.5-pro",
+        "gemini-1.5-pro-latest",
+        "gemini-1.5-pro-001",
+        "gemini-pro",
+        "gemini-1.0-pro"
+    ];
 
-// --- Smart Generator ---
-async function generateResponse(prompt) {
-    // 1. Try gemini-1.5-flash first (Standard)
-    try {
-        const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
-        const result = await model.generateContent(prompt);
-        return result.response.text();
-    } catch (e) {
-        console.log(`>> Flash failed (${e.message}). Trying gemini-pro...`);
+    for (const modelName of candidates) {
+        try {
+            const model = genAI.getGenerativeModel({ model: modelName });
+            // Run a tiny test prompt
+            await model.generateContent("Test");
+            
+            console.log(`>> ✅ SUCCESS: Found working model: "${modelName}"`);
+            activeModelName = modelName;
+            return;
+        } catch (error) {
+            // Ignore 404 (Not Found) and 403 (Permission Denied) and keep looking
+            if (error.message.includes("404") || error.message.includes("403")) {
+                console.log(`>> Model "${modelName}" not available (${error.message.split(':')[0]})`);
+            } else {
+                // If it's a different error (like Quota), the model exists but we are out of limit.
+                // We'll accept it anyway because it's "valid".
+                console.log(`>> Model "${modelName}" found (with error: ${error.message})`);
+                activeModelName = modelName;
+                return;
+            }
+        }
     }
-
-    // 2. Try gemini-pro (Legacy)
-    try {
-        const model = genAI.getGenerativeModel({ model: "gemini-pro" });
-        const result = await model.generateContent(prompt);
-        return result.response.text();
-    } catch (e) {
-        console.log(`>> Pro failed (${e.message}).`);
-        throw new Error(`All models failed. Your API Key might be restricted. Error: ${e.message}`);
-    }
+    console.error(">> ❌ CRITICAL: No working models found. Check API Key Region availability.");
 }
 
 // --- WhatsApp Logic ---
 async function connectToWhatsApp() {
+    // 1. Find the model FIRST before connecting
+    await findWorkingModel();
+
     const authPath = path.resolve(__dirname, 'auth_info_baileys');
     const { state, saveCreds } = await useMultiFileAuthState(authPath);
     const { version } = await fetchLatestBaileysVersion();
@@ -127,20 +141,32 @@ async function connectToWhatsApp() {
 
             if (messageText.startsWith('!gpt ')) {
                 const prompt = messageText.slice(5);
-                console.log(`>> Processing GPT request: ${prompt}`);
+                console.log(`>> Received Prompt: "${prompt}"`);
+
+                if (!activeModelName) {
+                    await sock.sendMessage(sender, { text: "⚠️ Error: No Gemini model is available for this API Key." }, { quoted: msg });
+                    return;
+                }
+
                 await sock.sendPresenceUpdate('composing', sender);
 
                 try {
-                    const text = await generateResponse(prompt);
+                    // CRITICAL FIX: Use the model we found earlier
+                    console.log(`>> Generating with active model: ${activeModelName}`);
+                    const model = genAI.getGenerativeModel({ model: activeModelName });
+                    const result = await model.generateContent(prompt);
+                    const response = await result.response;
+                    const text = response.text();
+
                     await sock.sendMessage(sender, { text: text }, { quoted: msg });
                     console.log('>> Reply sent!');
                 } catch (aiError) {
-                    console.error('>> Gemini Failure:', aiError.message);
-                    await sock.sendMessage(sender, { text: "⚠️ Error: " + aiError.message }, { quoted: msg });
+                    console.error('>> Generation Failed:', aiError.message);
+                    await sock.sendMessage(sender, { text: "⚠️ AI Error: " + aiError.message }, { quoted: msg });
                 }
             }
         } catch (error) {
-            console.error('>> Message Handler Error:', error);
+            console.error('>> Handler Error:', error);
         }
     });
 }
